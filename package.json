@@ -2,6 +2,7 @@
   "name": "pi-packages-search",
   "version": "1.0.0",
   "type": "module",
+  "keywords": ["pi-package"],
   "bin": {
     "pi-packages-search": "./bin/cli.ts"
   },
@@ -11,8 +12,16 @@
     "bench": "bun run tests/bench.ts"
   },
   "dependencies": {},
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "typebox": "^1.2.9"
+  },
+  "pi": {
+    "extensions": ["./src/extension/index.ts"],
+    "skills": ["./skills"]
   }
 }
