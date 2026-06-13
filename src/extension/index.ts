@@ -101,7 +101,7 @@ export default function (pi: any) {
   });
 
   pi.registerCommand("pi-packages-search:crawl", {
-    description: "爬取/更新 Pi 包索引（默认增量）",
+    description: "爬取/更新 Pi 包索引（默认增量）。--full 全量, --retry 只补漏",
     handler: async (args: string, ctx: any) => {
       const ui = ctx?.ui;
       const STATUS_KEY = "pi-pkg-search";
@@ -128,6 +128,7 @@ export default function (pi: any) {
         const db = openDb();
         const meta = await runCrawler(db, {
           full: args.includes("--full"),
+          retryOnly: args.includes("--retry"),
           onLog,
         });
         db.close(false);

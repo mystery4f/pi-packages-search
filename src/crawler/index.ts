@@ -15,6 +15,7 @@ import type { ListPackage, CrawlMeta } from "../shared/types";
 
 export interface CrawlOptions {
   full?: boolean;       // 全量详情
+  retryOnly?: boolean;   // 只补漏：跳过列表扫描，仅重试 failed.json + DB 缺失的包
   proxy?: string;
   dataDir?: string;     // 测试用：JSON/META 写入目录
   onLog?: (msg: string) => void;  // 日志回调（默认 console.log）
@@ -49,38 +50,64 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
     log(`\r   列表页 ${listPagesDone}/${totalPages}  (${list.length} 包)      \r`);
   });
 
-  // ── 阶段 B: 增量对比 ──
+  // ── 阶段 B: 决定要爬哪些详情页 ──
   const metaPath = opts.dataDir ? `${opts.dataDir}/meta.json` : META_PATH;
   const skipMetaRead = opts.dataDir === ":memory:" || !existsSync(metaPath);
   const prevMeta: CrawlMeta | null = skipMetaRead
     ? null
     : JSON.parse(readFileSync(metaPath, "utf-8"));
-  const prevIndex = opts.full ? {} : (prevMeta?.dateIndex ?? {});
-  const diff = computeDiff(list, prevIndex);
-  const toFetch = opts.full ? list.map((p) => p.name) : diff.toFetch;
+  const prevIndex = prevMeta?.dateIndex ?? {};
+  const toFetch: string[] = [];
+  let removedNames: string[] = [];
 
-  // 补漏：上次爬取失败的包（prevIndex 中有记录但 DB 里实际缺失）
-  if (!opts.full && prevMeta) {
-    const currentNames = new Set(list.map((p) => p.name));
+  if (opts.retryOnly) {
+    // ── retry 模式：只补漏，不爬全量列表 ──
+    log("🔧 补漏模式：仅重试失败/缺失的包\n");
+    // 从 failed.json 拿上次失败的包名
+    const failedPath = opts.dataDir ? `${opts.dataDir}/failed.json` : FAILED_PATH;
+    const failedSet = new Set<string>();
+    if (existsSync(failedPath)) {
+      try {
+        const failedData = JSON.parse(readFileSync(failedPath, "utf-8"));
+        (failedData.names ?? []).forEach((n: string) => failedSet.add(n));
+      } catch { /* ignore */ }
+    }
+    // 从 DB 查 prevIndex 里有但 packages 表里缺的
     const existingNames = new Set(
       (db.prepare("SELECT name FROM packages WHERE archived=0").all() as any[]).map((r) => r.name),
     );
-    const missing: string[] = [];
+    const currentNames = new Set(list.map((p) => p.name));
     for (const name of Object.keys(prevIndex)) {
-      if (currentNames.has(name) && !existingNames.has(name) && !toFetch.includes(name)) {
-        missing.push(name);
+      if (currentNames.has(name) && !existingNames.has(name)) failedSet.add(name);
+    }
+    toFetch.push(...failedSet);
+    log(`   需补漏 ${toFetch.length} 个包\n`);
+  } else if (opts.full) {
+    log("🔧 全量模式：将爬取全部详情页\n");
+    toFetch.push(...list.map((p) => p.name));
+  } else {
+    // ── 增量模式 ──
+    const diff = computeDiff(list, prevIndex);
+    toFetch.push(...diff.toFetch);
+    removedNames = diff.removed;
+    log(`🔍 阶段 B: 增量对比 — 新增 ${diff.added.length} / 更新 ${diff.updated.length} / 消失 ${diff.removed.length}，需爬 ${diff.toFetch.length} 个详情页\n`);
+    // 补漏：上次爬取失败的包
+    if (prevMeta) {
+      const existingNames = new Set(
+        (db.prepare("SELECT name FROM packages WHERE archived=0").all() as any[]).map((r) => r.name),
+      );
+      const currentNames2 = new Set(list.map((p) => p.name));
+      const missing: string[] = [];
+      for (const name of Object.keys(prevIndex)) {
+        if (currentNames2.has(name) && !existingNames.has(name) && !toFetch.includes(name)) {
+          missing.push(name);
+        }
+      }
+      if (missing.length > 0) {
+        toFetch.push(...missing);
+        log(`   🔄 补漏: ${missing.length} 个包上次失败/缺失，本次重试\n`);
       }
     }
-    if (missing.length > 0) {
-      toFetch.push(...missing);
-      log(`   🔄 补漏: ${missing.length} 个包上次失败/缺失，本次重试\n`);
-    }
-  }
-
-  if (opts.full) {
-    log(`🔧 全量模式：将爬取全部 ${toFetch.length} 个详情页\n`);
-  } else {
-    log(`🔍 阶段 B: 增量对比 — 新增 ${diff.added.length} / 更新 ${diff.updated.length} / 消失 ${diff.removed.length}，需爬 ${toFetch.length} 个详情页\n`);
   }
 
   // ── 阶段 C+D: 详情爬取 + Worker 解析 + Writer 入库 ──
@@ -122,7 +149,7 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
     });
 
     writer.flush();
-    if (!opts.full) writer.markArchived(diff.removed);
+    if (!opts.full && !opts.retryOnly) writer.markArchived(removedNames);
     workers.terminate();
   }
 
