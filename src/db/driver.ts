@@ -62,7 +62,20 @@ function createNodeDriver(path: string): DatabaseDriver {
         run: (...b) => stmt.run(...b),
       };
     },
-    transaction: (fn) => db.transaction(fn) as any,
+    // node:sqlite 的 DatabaseSync 没有 .transaction(), 手动用 BEGIN/COMMIT/ROLLBACK 实现
+    transaction: <T extends (...args: any[]) => any>(fn: T): T => {
+      return ((...args: any[]) => {
+        db.exec("BEGIN");
+        try {
+          const result = fn(...args);
+          db.exec("COMMIT");
+          return result;
+        } catch (err) {
+          db.exec("ROLLBACK");
+          throw err;
+        }
+      }) as T;
+    },
     close: () => db.close(),
   };
 }

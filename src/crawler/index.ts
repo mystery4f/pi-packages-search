@@ -21,10 +21,10 @@ export interface CrawlOptions {
   silent?: boolean;     // 静默模式（测试用）
 }
 
-/** 默认日志：打印到 stdout，进度条用 \r 单行刷新 */
+/** 日志器工厂：onLog 优先（显式回调总生效）；否则 silent 返回空函数；否则默认 stdout */
 function makeLogger(opts: CrawlOptions) {
-  if (opts.silent) return (_msg: string) => {};
   if (opts.onLog) return opts.onLog;
+  if (opts.silent) return (_msg: string) => {};
   return (msg: string) => process.stdout.write(msg);
 }
 
@@ -46,9 +46,8 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
     const html = await fetchPage(`${BASE_URL}?page=${page}`);
     list.push(...parseListHtml(html));
     listPagesDone++;
-    if (!opts.silent) process.stdout.write(`\r   列表页 ${listPagesDone}/${totalPages}  (${list.length} 包)      `);
+    log(`\r   列表页 ${listPagesDone}/${totalPages}  (${list.length} 包)      \r`);
   });
-  if (!opts.silent) process.stdout.write("\n");
 
   // ── 阶段 B: 增量对比 ──
   const metaPath = opts.dataDir ? `${opts.dataDir}/meta.json` : META_PATH;
@@ -96,15 +95,13 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
         limiter.recordFailure(); // 限流/错误：降并发
       }
       done++;
-      if (!opts.silent) {
-        const pct = ((done / toFetch.length) * 100).toFixed(0);
-        const elapsed = (Date.now() - detailStart) / 1000;
-        const speed = (done / elapsed).toFixed(1);
-        const eta = Math.round((toFetch.length - done) / (done / elapsed));
-        process.stdout.write(`\r   [${pct}%] ${done}/${toFetch.length}  ${speed}/s  剩余 ~${eta}s  失败 ${failed}  并发 ${limiter.current()}    `);
-      }
+      const pct = ((done / toFetch.length) * 100).toFixed(0);
+      const elapsed = (Date.now() - detailStart) / 1000;
+      const speed = elapsed > 0 ? (done / elapsed).toFixed(1) : "0";
+      const remain = toFetch.length - done;
+      const eta = elapsed > 0 && done > 0 ? Math.round(remain / (done / elapsed)) : 0;
+      log(`\r   [${pct}%] ${done}/${toFetch.length}  ${speed}/s  剩余 ~${eta}s  失败 ${failed}  并发 ${limiter.current()}    \r`);
     });
-    if (!opts.silent) process.stdout.write("\n");
 
     writer.flush();
     if (!opts.full) writer.markArchived(diff.removed);
@@ -132,8 +129,6 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
     mkdirSync(dirname(metaPath), { recursive: true });
     writeFileSync(metaPath, JSON.stringify(meta, null, 2));
   }
-  if (!opts.silent) {
-    log(`\n✅ 完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s\n`);
-  }
+  log(`\n✅ 完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s\n`);
   return meta;
 }

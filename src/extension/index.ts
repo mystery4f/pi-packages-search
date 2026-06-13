@@ -86,10 +86,41 @@ export default function (pi: any) {
   pi.registerCommand("pi-packages-search:crawl", {
     description: "爬取/更新 Pi 包索引（默认增量）",
     handler: async (args: string) => {
-      const db = openDb();
-      const meta = await runCrawler(db, { full: args.includes("--full") });
-      db.close(false);
-      pi?.ctx?.ui?.notify?.(`爬取完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s`, "info");
+      const ui = pi?.ctx?.ui;
+      const STATUS_KEY = "pi-pkg-search";
+
+      // 节流：进度刷新很快，限制 setStatus 频率避免闪烁
+      let lastStatusMs = 0;
+      const THROTTLE_MS = 200;
+      const onLog = (msg: string) => {
+        if (!ui?.setStatus) return;
+        const trimmed = msg.replace(/\r/g, "").trim();
+        if (!trimmed) return;
+        // 结果类（含 ✅/⚠）走 notify，不走状态栏
+        if (/^[✅✨⚠❌]/.test(trimmed)) {
+          ui.notify?.(trimmed, "info");
+          return;
+        }
+        const now = Date.now();
+        if (now - lastStatusMs < THROTTLE_MS) return;
+        lastStatusMs = now;
+        ui.setStatus(STATUS_KEY, trimmed);
+      };
+
+      try {
+        const db = openDb();
+        const meta = await runCrawler(db, {
+          full: args.includes("--full"),
+          onLog,
+        });
+        db.close(false);
+        // 清空状态栏 + notify 最终结果
+        ui?.setStatus?.(STATUS_KEY, undefined);
+        ui?.notify?.(`✅ 爬取完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s`, "info");
+      } catch (err: any) {
+        ui?.setStatus?.(STATUS_KEY, undefined);
+        ui?.notify?.(`❌ 爬取失败: ${err?.message ?? err}`, "error");
+      }
     },
   });
 }
