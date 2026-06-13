@@ -5,6 +5,7 @@ export const DATA_DIR = join(homedir(), "pi-data", "pi-packages-search");
 export const DB_PATH = join(DATA_DIR, "pi-packages.sqlite");
 export const JSON_PATH = join(DATA_DIR, "packages.json");
 export const META_PATH = join(DATA_DIR, "meta.json");
+export const FAILED_PATH = join(DATA_DIR, "failed.json");
 
 export const BASE_URL = "https://pi.dev/packages";
 

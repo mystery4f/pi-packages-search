@@ -37,4 +37,5 @@ export interface CrawlMeta {
   crawlerVersion: string;
   sourceUrl: string;
   dateIndex: Record<string, number>;  // name -> date 时间戳
+  failedCount: number;               // 本次爬取失败的包数
 }

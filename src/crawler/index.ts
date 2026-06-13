@@ -9,7 +9,7 @@ import { Writer } from "./writer";
 import { AdaptiveLimiter } from "./rate-limiter";
 import { WorkerPool } from "./worker-pool";
 import {
-  BASE_URL, LIST_CONCURRENCY, DETAIL_CONCURRENCY, JSON_PATH, META_PATH,
+  BASE_URL, LIST_CONCURRENCY, DETAIL_CONCURRENCY, JSON_PATH, META_PATH, FAILED_PATH,
 } from "../shared/config";
 import type { ListPackage, CrawlMeta } from "../shared/types";
 
@@ -66,6 +66,7 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
   }
 
   // ── 阶段 C+D: 详情爬取 + Worker 解析 + Writer 入库 ──
+  const failedNames: string[] = [];
   if (toFetch.length === 0) {
     log("✨ 无需更新，所有包已是最新\n");
   } else {
@@ -75,7 +76,6 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
     const writer = new Writer(db);
     const listMap = new Map(list.map((p) => [p.name, p]));
     let done = 0;
-    let failed = 0;
     const detailStart = Date.now();
 
     await pool(toFetch, limiter.current(), async (name) => {
@@ -90,8 +90,8 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
         }
         writer.add(pkg);
         limiter.recordSuccess();
-      } catch {
-        failed++;
+      } catch (err: any) {
+        failedNames.push(name);
         limiter.recordFailure(); // 限流/错误：降并发
       }
       done++;
@@ -100,22 +100,25 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
       const speed = elapsed > 0 ? (done / elapsed).toFixed(1) : "0";
       const remain = toFetch.length - done;
       const eta = elapsed > 0 && done > 0 ? Math.round(remain / (done / elapsed)) : 0;
-      log(`\r   [${pct}%] ${done}/${toFetch.length}  ${speed}/s  剩余 ~${eta}s  失败 ${failed}  并发 ${limiter.current()}    \r`);
+      log(`\r   [${pct}%] ${done}/${toFetch.length}  ${speed}/s  剩余 ~${eta}s  失败 ${failedNames.length}  并发 ${limiter.current()}    \r`);
     });
 
     writer.flush();
     if (!opts.full) writer.markArchived(diff.removed);
     workers.terminate();
-    if (failed > 0) log(`   ⚠ ${failed} 个包爬取失败（已跳过，可重试）\n`);
   }
 
-  // ── 写 JSON + meta ──
+  // ── 写 JSON + meta + failed.json ──
   const skipFiles = opts.dataDir === ":memory:";
   const allRows = db.prepare("SELECT * FROM packages WHERE archived=0").all();
   const jsonPath = opts.dataDir ? `${opts.dataDir}/packages.json` : JSON_PATH;
+  const failedPath = opts.dataDir ? `${opts.dataDir}/failed.json` : FAILED_PATH;
   if (!skipFiles) {
     mkdirSync(dirname(jsonPath), { recursive: true });
     writeFileSync(jsonPath, JSON.stringify({ generated: new Date().toISOString(), total: allRows.length, packages: allRows }, null, 2));
+    if (failedNames.length > 0) {
+      writeFileSync(failedPath, JSON.stringify({ lastCrawl: new Date().toISOString(), count: failedNames.length, names: failedNames }, null, 2));
+    }
   }
   const meta: CrawlMeta = {
     lastCrawl: new Date().toISOString(),
@@ -124,11 +127,19 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
     crawlerVersion: "1.0.0",
     sourceUrl: BASE_URL,
     dateIndex: buildDateIndex(list),
+    failedCount: failedNames.length,
   };
   if (!skipFiles) {
     mkdirSync(dirname(metaPath), { recursive: true });
     writeFileSync(metaPath, JSON.stringify(meta, null, 2));
   }
-  log(`\n✅ 完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s\n`);
+  // 区分全成功 / 部分失败（仅 CLI 模式输出；扩展模式由 handler 根据 meta.failedCount 决定通知）
+  if (!opts.onLog) {
+    if (failedNames.length > 0) {
+      log(`\n⚠ 完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s, 但 ${failedNames.length} 个失败\n`);
+    } else {
+      log(`\n✅ 完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s\n`);
+    }
+  }
   return meta;
 }

@@ -2,6 +2,23 @@ import { Type } from "typebox";
 import { openDb } from "../db/connection";
 import { searchPackages, getPackageDetail, listPackages, getStats } from "../db/query";
 import { runCrawler } from "../crawler";
+import { FAILED_PATH } from "../shared/config";
+import { readFileSync, existsSync } from "node:fs";
+
+/** 读取 failed.json，返回失败包名摘要（最多展示 10 个）*/
+async function readFailedSummary(): Promise<string> {
+  try {
+    if (!existsSync(FAILED_PATH)) return "";
+    const data = JSON.parse(readFileSync(FAILED_PATH, "utf-8"));
+    const names: string[] = data.names ?? [];
+    if (names.length === 0) return "";
+    const shown = names.slice(0, 10).join(", ");
+    const more = names.length > 10 ? ` 等 ${names.length} 个` : "";
+    return `${shown}${more}（详见 ${FAILED_PATH}）`;
+  } catch {
+    return "";
+  }
+}
 
 const PkgTypeUnion = Type.Union([
   Type.Literal("extension"), Type.Literal("package"), Type.Literal("skill"),
@@ -114,9 +131,15 @@ export default function (pi: any) {
           onLog,
         });
         db.close(false);
-        // 清空状态栏 + notify 最终结果
+        // 清空状态栏 + 根据结果分级提示
         ui?.setStatus?.(STATUS_KEY, undefined);
-        ui?.notify?.(`✅ 爬取完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s`, "info");
+        if (meta.failedCount > 0) {
+          // 部分失败：读 failed.json 拿失败包名，在对话里留摘要
+          const failedSummary = await readFailedSummary();
+          ui?.notify?.(`⚠ 爬取完成但 ${meta.failedCount} 个包失败: ${failedSummary}`, "warn");
+        } else {
+          ui?.notify?.(`✅ 爬取完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s`, "info");
+        }
       } catch (err: any) {
         ui?.setStatus?.(STATUS_KEY, undefined);
         ui?.notify?.(`❌ 爬取失败: ${err?.message ?? err}`, "error");
