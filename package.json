@@ -12,6 +12,7 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "typebox": "^1.2.9"
   }
 }

@@ -4,9 +4,9 @@ import type { ListPackage } from "../src/shared/types";
 
 describe("incremental computeDiff", () => {
   const now: ListPackage[] = [
-    { name: "a", date: 100, downloads: 1 },
-    { name: "b", date: 200, downloads: 2 },  // 更新了(date 增大)
-    { name: "c", date: 300, downloads: 3 },  // 新增
+    { name: "a", date: 100, downloads: 1, types: ["extension"] },
+    { name: "b", date: 200, downloads: 2, types: ["extension"] },  // 更新了(date 增大)
+    { name: "c", date: 300, downloads: 3, types: ["theme"] },  // 新增
   ];
   const prev = { a: 100, b: 100, d: 50 };  // d 消失
 
