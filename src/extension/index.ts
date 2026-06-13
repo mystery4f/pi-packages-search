@@ -110,18 +110,45 @@ export default function (pi: any) {
       let lastStatusMs = 0;
       const THROTTLE_MS = 200;
       const onLog = (msg: string) => {
-        if (!ui?.setStatus) return;
+        if (!ui) return;
         const trimmed = msg.replace(/\r/g, "").trim();
         if (!trimmed) return;
-        // 结果类（含 ✅/⚠）走 notify，不走状态栏
-        if (/^[✅✨⚠❌]/.test(trimmed)) {
+
+        // 进度条 → setStatus（单行紧凑）
+        if (/^\[?\d{1,3}%/.test(trimmed) || /列表页\s*\d+\/\d+/.test(trimmed)) {
+          const now = Date.now();
+          if (now - lastStatusMs < THROTTLE_MS) return;
+          lastStatusMs = now;
+          // 缩短格式: "67% 2635/3931 14/s ←82s 失败2 并发15"
+          const compact = trimmed
+            .replace(/\[?\s*(\d+)%\]?\s*(\d+)\/(\d+)\s+([\d.]+)\/s\s+剩余\s*~(\d+)s\s+失败\s*(\d+)\s+并发\s*(\d+)/,
+              "$1% $2/$3 $4/s ←$5s 失败$6")
+            .replace(/列表页\s*(\d+)\/(\d+)\s*\((\d+)\s*包\)/, "列表 $1/$2 ($3包)");
+          ui.setStatus?.(STATUS_KEY, compact);
+          return;
+        }
+        // 阶段头 → notify（简短一次性）
+        if (/^[📋🌐🔍🔧]/.test(trimmed)) {
+          const short = trimmed.replace(/^📋 阶段 A: 爬取列表页\.\.\.$/, "📋 扫描列表")
+            .replace(/^🌐 阶段 C: 爬取详情页.*$/, "🌐 拉取详情")
+            .replace(/^🔧 补漏模式.*$/, "🔧 补漏")
+            .replace(/^🔧 全量模式.*$/, "🔧 全量爬取")
+            .replace(/^🔍 阶段 B:.*$/, "🔍 增量对比");
+          ui.notify?.(short, "info");
+          return;
+        }
+        // 补漏提示 → notify
+        if (/^[🔄]/.test(trimmed) || (trimmed.includes("补漏") && /需爬/.test(trimmed))) {
           ui.notify?.(trimmed, "info");
           return;
         }
-        const now = Date.now();
-        if (now - lastStatusMs < THROTTLE_MS) return;
-        lastStatusMs = now;
-        ui.setStatus(STATUS_KEY, trimmed);
+        // 统计行（"发现 N 个包"）→ notify
+        if (/^\s*发现\s*\d+\s*个包/.test(trimmed)) {
+          ui.notify?.(trimmed, "info");
+          return;
+        }
+        // 最终结果（✅/⚠）→ 略过，handler 自己 notify
+        // 其他无关日志 → 丢弃
       };
 
       try {
@@ -153,18 +180,37 @@ export default function (pi: any) {
     description: "补漏：重试上次失败或缺失的包",
     handler: async (_args: string, ctx: any) => {
       const ui = ctx?.ui;
+      const STATUS_KEY = "pi-pkg-search";
+      let lastStatusMs = 0;
+      const THROTTLE_MS = 200;
+      const onLog = (msg: string) => {
+        if (!ui) return;
+        const trimmed = msg.replace(/\r/g, "").trim();
+        if (!trimmed) return;
+        if (/^\[?\d{1,3}%/.test(trimmed)) {
+          const now = Date.now();
+          if (now - lastStatusMs < THROTTLE_MS) return;
+          lastStatusMs = now;
+          const compact = trimmed
+            .replace(/\[?\s*(\d+)%\]?\s*(\d+)\/(\d+)\s+([\d.]+)\/s\s+←(\d+)s\s+失败(\d+)/,
+              "$1% $2/$3 $4/s ←$5s 失败$6");
+          ui.setStatus?.(STATUS_KEY, compact);
+        }
+      };
       ui?.notify?.("🔧 补漏中...", "info");
       try {
         const db = openDb();
-        const meta = await runCrawler(db, { retryOnly: true });
+        const meta = await runCrawler(db, { retryOnly: true, onLog });
         db.close(false);
+        ui?.setStatus?.(STATUS_KEY, undefined);
         if (meta.failedCount > 0) {
           const summary = await readFailedSummary();
           ui?.notify?.(`⚠ 补漏完成但仍有 ${meta.failedCount} 个失败: ${summary}`, "warn");
         } else {
-          ui?.notify?.(`✅ 补漏完成, 共 ${meta.totalPackages} 包`, "info");
+          ui?.notify?.(`✅ 补漏完成`, "info");
         }
       } catch (err: any) {
+        ui?.setStatus?.(STATUS_KEY, undefined);
         ui?.notify?.(`❌ 补漏失败: ${err?.message ?? err}`, "error");
       }
     },

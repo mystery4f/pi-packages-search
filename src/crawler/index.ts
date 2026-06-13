@@ -147,7 +147,7 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
       const speed = elapsed > 0 ? (done / elapsed).toFixed(1) : "0";
       const remain = toFetch.length - done;
       const eta = elapsed > 0 && done > 0 ? Math.round(remain / (done / elapsed)) : 0;
-      log(`\r   [${pct}%] ${done}/${toFetch.length}  ${speed}/s  剩余 ~${eta}s  失败 ${failedItems.length}  并发 ${limiter.current()}    \r`);
+      log(`\r   ${pct}% ${done}/${toFetch.length}  ${speed}/s  ←${eta}s  失败${failedItems.length}    \r`);
     });
 
     writer.flush();
