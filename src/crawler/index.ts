@@ -17,22 +17,38 @@ export interface CrawlOptions {
   full?: boolean;       // 全量详情
   proxy?: string;
   dataDir?: string;     // 测试用：JSON/META 写入目录
+  onLog?: (msg: string) => void;  // 日志回调（默认 console.log）
+  silent?: boolean;     // 静默模式（测试用）
+}
+
+/** 默认日志：打印到 stdout，进度条用 \r 单行刷新 */
+function makeLogger(opts: CrawlOptions) {
+  if (opts.silent) return (_msg: string) => {};
+  if (opts.onLog) return opts.onLog;
+  return (msg: string) => process.stdout.write(msg);
 }
 
 export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): Promise<CrawlMeta> {
   const start = Date.now();
+  const log = makeLogger(opts);
   if (opts.proxy) { process.env.HTTPS_PROXY = opts.proxy; process.env.HTTP_PROXY = opts.proxy; }
 
   // ── 阶段 A: 列表全量 ──
+  log("📋 阶段 A: 爬取列表页...\n");
   const firstHtml = await fetchPage(BASE_URL);
   const totalPages = parseTotalPages(firstHtml);
   const totalCount = parseTotalCount(firstHtml);
+  log(`   发现 ${totalCount} 个包，共 ${totalPages} 页\n`);
   const list: ListPackage[] = parseListHtml(firstHtml);
+  let listPagesDone = 1;
   const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
   await pool(pages, LIST_CONCURRENCY, async (page) => {
     const html = await fetchPage(`${BASE_URL}?page=${page}`);
     list.push(...parseListHtml(html));
+    listPagesDone++;
+    if (!opts.silent) process.stdout.write(`\r   列表页 ${listPagesDone}/${totalPages}  (${list.length} 包)      `);
   });
+  if (!opts.silent) process.stdout.write("\n");
 
   // ── 阶段 B: 增量对比 ──
   const metaPath = opts.dataDir ? `${opts.dataDir}/meta.json` : META_PATH;
@@ -44,32 +60,57 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
   const diff = computeDiff(list, prevIndex);
   const toFetch = opts.full ? list.map((p) => p.name) : diff.toFetch;
 
-  // ── 阶段 C: 详情增量 + 阶段 D: Worker 解析 + Writer 入库 ──
-  const limiter = new AdaptiveLimiter(DETAIL_CONCURRENCY);
-  const workers = new WorkerPool();
-  const writer = new Writer(db);
-  const listMap = new Map(list.map((p) => [p.name, p]));
+  if (opts.full) {
+    log(`🔧 全量模式：将爬取全部 ${toFetch.length} 个详情页\n`);
+  } else {
+    log(`🔍 阶段 B: 增量对比 — 新增 ${diff.added.length} / 更新 ${diff.updated.length} / 消失 ${diff.removed.length}，需爬 ${toFetch.length} 个详情页\n`);
+  }
 
-  await pool(toFetch, limiter.current(), async (name) => {
-    try {
-      const html = await fetchPage(`${BASE_URL}/${encodeURIComponent(name)}`);
-      const pkg = await workers.parse(name, html);
-      const lp = listMap.get(name);
-      if (lp) {
-        pkg.downloadsMonthly = pkg.downloadsMonthly || lp.downloads;
-        pkg.updatedAt = lp.date ? new Date(lp.date).toISOString().split("T")[0] : "";
-        pkg.types = lp.types.length ? lp.types : pkg.types;
+  // ── 阶段 C+D: 详情爬取 + Worker 解析 + Writer 入库 ──
+  if (toFetch.length === 0) {
+    log("✨ 无需更新，所有包已是最新\n");
+  } else {
+    log(`🌐 阶段 C: 爬取详情页 (并发 ${DETAIL_CONCURRENCY})...\n`);
+    const limiter = new AdaptiveLimiter(DETAIL_CONCURRENCY);
+    const workers = new WorkerPool();
+    const writer = new Writer(db);
+    const listMap = new Map(list.map((p) => [p.name, p]));
+    let done = 0;
+    let failed = 0;
+    const detailStart = Date.now();
+
+    await pool(toFetch, limiter.current(), async (name) => {
+      try {
+        const html = await fetchPage(`${BASE_URL}/${encodeURIComponent(name)}`);
+        const pkg = await workers.parse(name, html);
+        const lp = listMap.get(name);
+        if (lp) {
+          pkg.downloadsMonthly = pkg.downloadsMonthly || lp.downloads;
+          pkg.updatedAt = lp.date ? new Date(lp.date).toISOString().split("T")[0] : "";
+          pkg.types = lp.types.length ? lp.types : pkg.types;
+        }
+        writer.add(pkg);
+        limiter.recordSuccess();
+      } catch {
+        failed++;
+        limiter.recordFailure(); // 限流/错误：降并发
       }
-      writer.add(pkg);
-      limiter.recordSuccess();
-    } catch {
-      limiter.recordFailure(); // 限流/错误：降并发
-    }
-  });
+      done++;
+      if (!opts.silent) {
+        const pct = ((done / toFetch.length) * 100).toFixed(0);
+        const elapsed = (Date.now() - detailStart) / 1000;
+        const speed = (done / elapsed).toFixed(1);
+        const eta = Math.round((toFetch.length - done) / (done / elapsed));
+        process.stdout.write(`\r   [${pct}%] ${done}/${toFetch.length}  ${speed}/s  剩余 ~${eta}s  失败 ${failed}  并发 ${limiter.current()}    `);
+      }
+    });
+    if (!opts.silent) process.stdout.write("\n");
 
-  writer.flush();
-  if (!opts.full) writer.markArchived(diff.removed);
-  workers.terminate();
+    writer.flush();
+    if (!opts.full) writer.markArchived(diff.removed);
+    workers.terminate();
+    if (failed > 0) log(`   ⚠ ${failed} 个包爬取失败（已跳过，可重试）\n`);
+  }
 
   // ── 写 JSON + meta ──
   const skipFiles = opts.dataDir === ":memory:";
@@ -90,6 +131,9 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
   if (!skipFiles) {
     mkdirSync(dirname(metaPath), { recursive: true });
     writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+  }
+  if (!opts.silent) {
+    log(`\n✅ 完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s\n`);
   }
   return meta;
 }

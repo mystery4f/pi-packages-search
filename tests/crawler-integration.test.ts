@@ -25,7 +25,7 @@ describe("crawler integration", () => {
   test("全量爬取入库 2 个包", async () => {
     const db = openDatabase(":memory:");
     initSchema(db);
-    await runCrawler(db, { full: true, dataDir: ":memory:" });
+    await runCrawler(db, { full: true, dataDir: ":memory:", silent: true });
     const s = getStats(db);
     expect(s.total).toBe(2);
     expect(s.byType.extension).toBe(1);
