@@ -59,6 +59,24 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
   const diff = computeDiff(list, prevIndex);
   const toFetch = opts.full ? list.map((p) => p.name) : diff.toFetch;
 
+  // 补漏：上次爬取失败的包（prevIndex 中有记录但 DB 里实际缺失）
+  if (!opts.full && prevMeta) {
+    const currentNames = new Set(list.map((p) => p.name));
+    const existingNames = new Set(
+      (db.prepare("SELECT name FROM packages WHERE archived=0").all() as any[]).map((r) => r.name),
+    );
+    const missing: string[] = [];
+    for (const name of Object.keys(prevIndex)) {
+      if (currentNames.has(name) && !existingNames.has(name) && !toFetch.includes(name)) {
+        missing.push(name);
+      }
+    }
+    if (missing.length > 0) {
+      toFetch.push(...missing);
+      log(`   🔄 补漏: ${missing.length} 个包上次失败/缺失，本次重试\n`);
+    }
+  }
+
   if (opts.full) {
     log(`🔧 全量模式：将爬取全部 ${toFetch.length} 个详情页\n`);
   } else {
