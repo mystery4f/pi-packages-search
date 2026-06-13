@@ -85,8 +85,8 @@ export default function (pi: any) {
 
   pi.registerCommand("pi-packages-search:crawl", {
     description: "爬取/更新 Pi 包索引（默认增量）",
-    handler: async (args: string) => {
-      const ui = pi?.ctx?.ui;
+    handler: async (args: string, ctx: any) => {
+      const ui = ctx?.ui;
       const STATUS_KEY = "pi-pkg-search";
 
       // 节流：进度刷新很快，限制 setStatus 频率避免闪烁
