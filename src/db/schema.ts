@@ -1,10 +1,10 @@
-import type { Database } from "bun:sqlite";
+import type { DatabaseDriver } from "./driver";
 
-export function initSchema(db: Database): void {
-  db.run("PRAGMA journal_mode = WAL;");
-  db.run("PRAGMA busy_timeout = 5000;");
+export function initSchema(db: DatabaseDriver): void {
+  db.exec("PRAGMA journal_mode = WAL;");
+  db.exec("PRAGMA busy_timeout = 5000;");
 
-  db.run(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS packages (
       id                  INTEGER PRIMARY KEY,
       name                TEXT UNIQUE NOT NULL,
@@ -29,10 +29,10 @@ export function initSchema(db: Database): void {
       crawled_at          TEXT
     );
   `);
-  db.run("CREATE INDEX IF NOT EXISTS idx_packages_types ON packages(types);");
-  db.run("CREATE INDEX IF NOT EXISTS idx_packages_downloads ON packages(downloads_monthly DESC);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_packages_types ON packages(types);");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_packages_downloads ON packages(downloads_monthly DESC);");
 
-  db.run(`
+  db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS packages_fts USING fts5(
       name, description, readme, types, manifest_tools,
       content='packages',

@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { DatabaseDriver } from "../db/driver";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { fetchPage } from "./fetcher";
@@ -19,7 +19,7 @@ export interface CrawlOptions {
   dataDir?: string;     // 测试用：JSON/META 写入目录
 }
 
-export async function runCrawler(db: Database, opts: CrawlOptions = {}): Promise<CrawlMeta> {
+export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): Promise<CrawlMeta> {
   const start = Date.now();
   if (opts.proxy) { process.env.HTTPS_PROXY = opts.proxy; process.env.HTTP_PROXY = opts.proxy; }
 
@@ -73,7 +73,7 @@ export async function runCrawler(db: Database, opts: CrawlOptions = {}): Promise
 
   // ── 写 JSON + meta ──
   const skipFiles = opts.dataDir === ":memory:";
-  const allRows = db.query("SELECT * FROM packages WHERE archived=0").all();
+  const allRows = db.prepare("SELECT * FROM packages WHERE archived=0").all();
   const jsonPath = opts.dataDir ? `${opts.dataDir}/packages.json` : JSON_PATH;
   if (!skipFiles) {
     mkdirSync(dirname(jsonPath), { recursive: true });

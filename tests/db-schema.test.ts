@@ -1,15 +1,15 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { Database } from "bun:sqlite";
-import { openDb, initSchema } from "../src/db/connection";
+import { openDatabase } from "../src/db/driver";
+import { initSchema } from "../src/db/connection";
 
 describe("db schema", () => {
-  let db: Database;
-  beforeEach(() => { db = new Database(":memory:"); });
+  let db: ReturnType<typeof openDatabase>;
+  beforeEach(() => { db = openDatabase(":memory:"); });
   afterEach(() => db.close(false));
 
   test("建表 packages 存在", () => {
     initSchema(db);
-    const tables = db.query("SELECT name FROM sqlite_master WHERE type='table'").all() as {name:string}[];
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as {name:string}[];
     expect(tables.map(t => t.name)).toContain("packages");
     expect(tables.map(t => t.name)).toContain("packages_fts");
   });
@@ -27,8 +27,7 @@ describe("db schema", () => {
 
   test("WAL 模式与 busy_timeout 已设置", () => {
     initSchema(db);
-    const mode = db.query("PRAGMA journal_mode").get() as any;
-    // 内存库可能返回 memory，文件库才 WAL；这里只验证不报错
+    const mode = db.prepare("PRAGMA journal_mode").get() as any;
     expect(mode).toBeTruthy();
   });
 });

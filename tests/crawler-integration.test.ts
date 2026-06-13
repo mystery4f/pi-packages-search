@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, beforeEach } from "bun:test";
-import { Database } from "bun:sqlite";
+import { openDatabase } from "../src/db/driver";
 import { initSchema } from "../src/db/schema";
 import { getStats } from "../src/db/query";
 import { runCrawler } from "../src/crawler";
@@ -23,7 +23,7 @@ beforeEach(() => {
 
 describe("crawler integration", () => {
   test("全量爬取入库 2 个包", async () => {
-    const db = new Database(":memory:");
+    const db = openDatabase(":memory:");
     initSchema(db);
     await runCrawler(db, { full: true, dataDir: ":memory:" });
     const s = getStats(db);

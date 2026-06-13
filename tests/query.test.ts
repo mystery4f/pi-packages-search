@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { Database } from "bun:sqlite";
+import { openDatabase } from "../src/db/driver";
 import { initSchema } from "../src/db/schema";
 import { Writer } from "../src/crawler/writer";
 import { searchPackages, getPackageDetail, listPackages, getStats } from "../src/db/query";
@@ -14,9 +14,9 @@ function mk(name: string, desc: string, types: string[], dl: number): PiPackage 
 }
 
 describe("query", () => {
-  let db: Database;
+  let db: ReturnType<typeof openDatabase>;
   beforeEach(() => {
-    db = new Database(":memory:"); initSchema(db);
+    db = openDatabase(":memory:"); initSchema(db);
     const w = new Writer(db, 1);
     w.add(mk("memory-pro", "persistent memory plugin", ["extension"], 500));
     w.add(mk("theme-dark", "dark color theme", ["theme"], 200));

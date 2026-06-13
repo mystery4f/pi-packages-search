@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { DatabaseDriver } from "../db/driver";
 import type { PiPackage } from "../shared/types";
 import { WRITE_BATCH } from "../shared/config";
 
@@ -15,10 +15,10 @@ const FTS_UPSERT = `INSERT INTO packages_fts
 /** 唯一写入点：攒够批次用单一事务写入，串行避免写锁竞争 */
 export class Writer {
   private buffer: PiPackage[] = [];
-  private stmtUpsert: ReturnType<Database["prepare"]>;
-  private stmtFts: ReturnType<Database["prepare"]>;
+  private stmtUpsert;
+  private stmtFts;
 
-  constructor(private db: Database, private batchSize: number = WRITE_BATCH) {
+  constructor(private db: DatabaseDriver, private batchSize: number = WRITE_BATCH) {
     this.stmtUpsert = db.prepare(UPSERT);
     this.stmtFts = db.prepare(FTS_UPSERT);
   }
@@ -51,10 +51,9 @@ export class Writer {
 
   markArchived(names: string[]): void {
     if (names.length === 0) return;
+    const stmt = this.db.prepare("UPDATE packages SET archived=1 WHERE name=?");
     const mark = this.db.transaction(() => {
-      for (const n of names) {
-        this.db.prepare("UPDATE packages SET archived=1 WHERE name=?").run(n);
-      }
+      for (const n of names) stmt.run(n);
     });
     mark();
   }
