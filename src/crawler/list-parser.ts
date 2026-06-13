@@ -16,10 +16,12 @@ export function parseListHtml(html: string): ListPackage[] {
     const block = m[0];
     const name = attr(block, "data-package-name");
     if (!name) continue;
+    const typesStr = attr(block, "data-package-types");
     results.push({
       name,
       date: parseInt(attr(block, "data-package-date")) || 0,
       downloads: parseInt(attr(block, "data-package-downloads")) || 0,
+      types: typesStr ? typesStr.split(",").map((t) => t.trim()).filter(Boolean) : ["package"],
     });
   }
   return results;

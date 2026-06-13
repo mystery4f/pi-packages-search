@@ -3,6 +3,7 @@ export interface ListPackage {
   name: string;
   date: number;          // data-package-date 时间戳(ms)
   downloads: number;     // data-package-downloads
+  types: string[];       // data-package-types
 }
 
 /** 完整包数据（详情页解析后，入库结构）*/
