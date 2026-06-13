@@ -1,0 +1,17 @@
+{
+  "name": "pi-packages-search",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "pi-packages-search": "./bin/cli.ts"
+  },
+  "scripts": {
+    "crawl": "bun run bin/cli.ts crawl",
+    "test": "bun test",
+    "bench": "bun run tests/bench.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
