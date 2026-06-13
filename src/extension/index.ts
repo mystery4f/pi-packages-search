@@ -5,16 +5,16 @@ import { runCrawler } from "../crawler";
 import { FAILED_PATH } from "../shared/config";
 import { readFileSync, existsSync } from "node:fs";
 
-/** 读取 failed.json，返回失败包名摘要（最多展示 10 个）*/
+/** 读取 failed.json，返回失败摘要（含原因，最多展示 5 个）*/
 async function readFailedSummary(): Promise<string> {
   try {
     if (!existsSync(FAILED_PATH)) return "";
     const data = JSON.parse(readFileSync(FAILED_PATH, "utf-8"));
-    const names: string[] = data.names ?? [];
-    if (names.length === 0) return "";
-    const shown = names.slice(0, 10).join(", ");
-    const more = names.length > 10 ? ` 等 ${names.length} 个` : "";
-    return `${shown}${more}（详见 ${FAILED_PATH}）`;
+    const items: { name: string; error: string }[] = data.items ?? data.names?.map((n: string) => ({ name: n, error: "未知" })) ?? [];
+    if (items.length === 0) return "";
+    const shown = items.slice(0, 5).map((i) => `${i.name}(${i.error})`).join(", ");
+    const more = items.length > 5 ? ` 等${items.length}个` : "";
+    return `${shown}${more} (补漏: /pi-packages-search:retry)`;
   } catch {
     return "";
   }
@@ -144,6 +144,28 @@ export default function (pi: any) {
       } catch (err: any) {
         ui?.setStatus?.(STATUS_KEY, undefined);
         ui?.notify?.(`❌ 爬取失败: ${err?.message ?? err}`, "error");
+      }
+    },
+  });
+
+  // 短命令：直接补漏，等效于 crawl --retry
+  pi.registerCommand("pi-packages-search:retry", {
+    description: "补漏：重试上次失败或缺失的包",
+    handler: async (_args: string, ctx: any) => {
+      const ui = ctx?.ui;
+      ui?.notify?.("🔧 补漏中...", "info");
+      try {
+        const db = openDb();
+        const meta = await runCrawler(db, { retryOnly: true });
+        db.close(false);
+        if (meta.failedCount > 0) {
+          const summary = await readFailedSummary();
+          ui?.notify?.(`⚠ 补漏完成但仍有 ${meta.failedCount} 个失败: ${summary}`, "warn");
+        } else {
+          ui?.notify?.(`✅ 补漏完成, 共 ${meta.totalPackages} 包`, "info");
+        }
+      } catch (err: any) {
+        ui?.notify?.(`❌ 补漏失败: ${err?.message ?? err}`, "error");
       }
     },
   });
