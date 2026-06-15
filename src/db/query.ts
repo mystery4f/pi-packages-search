@@ -1,5 +1,6 @@
 import type { DatabaseDriver } from "./driver";
 import type { PiPackage } from "../shared/types";
+import { enrichFromNpm } from "../shared/npm-registry";
 
 export type PkgType = "extension" | "package" | "skill" | "theme" | "prompt";
 export type SortKey = "relevance" | "downloads" | "updated";
@@ -18,7 +19,7 @@ function rowToPkg(r: any): SearchResult {
     publishedAt: r.published_at, updatedAt: r.updated_at ?? "",
     installCmd: r.install_cmd ?? `pi install npm:${r.name}`, npmUrl: r.npm_url ?? "",
     repoUrl: r.repo_url, detailUrl: r.detail_url ?? "", manifest: r.manifest,
-    searchText: "", id: r.id, archived: r.archived ?? 0,
+    searchText: "", detailSource: r.detail_source ?? null, id: r.id, archived: r.archived ?? 0,
   };
 }
 
@@ -45,9 +46,47 @@ export function searchPackages(
   return db.prepare(sql).all(match, limit).map(rowToPkg);
 }
 
-export function getPackageDetail(db: DatabaseDriver, name: string): SearchResult | null {
+/**
+ * 按包名取详情。当 README 为空时，自动从 npm registry 补充并写回数据库，
+ * 下次查询直接命中缓存。npm 请求失败则降级返回本地数据。
+ */
+export async function getPackageDetail(db: DatabaseDriver, name: string): Promise<SearchResult | null> {
   const r = db.prepare("SELECT * FROM packages WHERE name=? AND archived=0").get(name) as any;
-  return r ? rowToPkg(r) : null;
+  if (!r) return null;
+  const pkg = rowToPkg(r);
+
+  // README 为空 → npm registry 实时补充 + 写回缓存
+  const enriched = await enrichFromNpm(pkg);
+  if (enriched.detailSource === "npm") writeBackNpmDetail(db, enriched);
+  return enriched;
+}
+
+/** 把 npm 补充的数据写回 packages 表 + FTS 索引，下次查询直接命中 */
+function writeBackNpmDetail(db: DatabaseDriver, pkg: SearchResult): void {
+  const now = new Date().toISOString();
+  const tx = db.transaction(() => {
+    db.prepare(`
+      UPDATE packages SET
+        readme=?, description=?, manifest=?, author=?, version=?, license=?,
+        repo_url=?, dependencies_count=?, published_at=?, detail_source=?, crawled_at=?
+      WHERE name=?`).run(
+      pkg.readme, pkg.description, pkg.manifest, pkg.author, pkg.version,
+      pkg.license, pkg.repoUrl, pkg.dependenciesCount, pkg.publishedAt,
+      pkg.detailSource, now, pkg.name,
+    );
+    // 同步 FTS：readme 补全后，全文搜索也应能命中该包
+    const id = (db.prepare("SELECT id FROM packages WHERE name=?").get(pkg.name) as any)?.id;
+    if (id != null) {
+      db.prepare("DELETE FROM packages_fts WHERE rowid=?").run(id);
+      db.prepare(`
+        INSERT INTO packages_fts (rowid, name, description, readme, types, manifest_tools)
+        VALUES (?,?,?,?,?,?)`).run(
+        id, pkg.name, pkg.description, pkg.readme ?? "",
+        JSON.stringify(pkg.types), pkg.manifest ?? "",
+      );
+    }
+  });
+  tx();
 }
 
 export function listPackages(

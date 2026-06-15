@@ -10,7 +10,7 @@ function mk(name: string, desc: string, types: string[], dl: number): PiPackage 
     license: null, size: null, dependenciesCount: null, downloadsMonthly: dl,
     downloadsWeekly: null, publishedAt: null, updatedAt: "2026-06-01",
     installCmd: `pi install npm:${name}`, npmUrl: "", repoUrl: null, detailUrl: "",
-    manifest: null, searchText: `${name} ${desc}` };
+    manifest: null, searchText: `${name} ${desc}`, detailSource: null };
 }
 
 describe("query", () => {
@@ -39,8 +39,8 @@ describe("query", () => {
     const r = searchPackages(db, "memory", { sort: "downloads" });
     expect(r[0].downloadsMonthly).toBeGreaterThanOrEqual(r[r.length - 1].downloadsMonthly);
   });
-  test("getPackageDetail 精确名", () => {
-    const p = getPackageDetail(db, "theme-dark");
+  test("getPackageDetail 精确名", async () => {
+    const p = await getPackageDetail(db, "theme-dark");
     expect(p?.name).toBe("theme-dark");
   });
   test("listPackages 按类型+下载排序", () => {

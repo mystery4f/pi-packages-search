@@ -26,7 +26,8 @@ export function initSchema(db: DatabaseDriver): void {
       detail_url          TEXT,
       manifest            TEXT,
       archived            INTEGER DEFAULT 0,
-      crawled_at          TEXT
+      crawled_at          TEXT,
+      detail_source       TEXT
     );
   `);
   db.exec("CREATE INDEX IF NOT EXISTS idx_packages_types ON packages(types);");
@@ -40,4 +41,15 @@ export function initSchema(db: DatabaseDriver): void {
       tokenize = 'unicode61 remove_diacritics 2'
     );
   `);
+
+  // ── 轻量迁移：为老库补列（CREATE TABLE IF NOT EXISTS 不会更新既有表结构）──
+  addColumnIfNotExists(db, "packages", "detail_source", "TEXT");
+}
+
+/** 仅当列不存在时 ALTER TABLE ADD COLUMN（SQLite 不支持 ADD COLUMN IF NOT EXISTS）*/
+function addColumnIfNotExists(db: DatabaseDriver, table: string, column: string, definition: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+  }
 }

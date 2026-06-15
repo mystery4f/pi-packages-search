@@ -86,5 +86,6 @@ export function parseDetailHtml(html: string, name: string): PiPackage {
     detailUrl: `https://pi.dev/packages/${encodeURIComponent(name)}`,
     manifest,
     searchText: clean(`${name} ${description} ${manifest ? extractManifestTools(manifest).join(" ") : ""}`),
+    detailSource: null,
   };
 }

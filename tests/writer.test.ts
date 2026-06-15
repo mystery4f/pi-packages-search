@@ -12,6 +12,7 @@ function mkPkg(name: string): PiPackage {
     updatedAt: "2026-06-01", installCmd: `pi install npm:${name}`,
     npmUrl: "https://npm/" + name, repoUrl: null,
     detailUrl: "https://pi.dev/packages/" + name, manifest: null, searchText: name,
+    detailSource: null,
   };
 }
 

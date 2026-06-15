@@ -27,6 +27,7 @@ export interface PiPackage {
   detailUrl: string;
   manifest: string | null;     // Pi manifest JSON 串
   searchText: string;          // 合并搜索文本
+  detailSource: string | null; // 详情来源标记: "npm" = readme 等由 registry 补充
 }
 
 /** meta.json 结构 */

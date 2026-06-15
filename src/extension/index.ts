@@ -62,7 +62,7 @@ export default function (pi: any) {
     parameters: Type.Object({ name: Type.String() }),
     async execute(_id: string, params: any) {
       const db = openDb();
-      const r = getPackageDetail(db, params.name);
+      const r = await getPackageDetail(db, params.name);
       db.close(false);
       if (!r) return { content: [{ type: "text", text: `未找到包: ${params.name}` }], details: {} };
       return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }], details: {} };

@@ -5,8 +5,8 @@ import { WRITE_BATCH } from "../shared/config";
 const UPSERT = `INSERT OR REPLACE INTO packages
   (name, description, readme, types, author, version, license, size, dependencies_count,
    downloads_monthly, downloads_weekly, published_at, updated_at, install_cmd, npm_url,
-   repo_url, detail_url, manifest, archived, crawled_at)
-  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`;
+   repo_url, detail_url, manifest, archived, crawled_at, detail_source)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,NULL)`;
 
 const FTS_UPSERT = `INSERT INTO packages_fts
   (rowid, name, description, readme, types, manifest_tools)
