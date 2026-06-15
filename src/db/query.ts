@@ -65,6 +65,14 @@ export async function getPackageDetail(db: DatabaseDriver, name: string): Promis
 function writeBackNpmDetail(db: DatabaseDriver, pkg: SearchResult): void {
   const now = new Date().toISOString();
   const tx = db.transaction(() => {
+    const id = (db.prepare("SELECT id FROM packages WHERE name=?").get(pkg.name) as any)?.id;
+    // FTS 是 external content table（content='packages'），其列 manifest_tools 与
+    // 主表列名 manifest 不一致。普通 DELETE 会触发 FTS5 从 content table 读列 → 报错。
+    // 改用 FTS5 special delete command（用 UPDATE 前的旧值定位索引项）再 insert 新值。
+    const old = id != null
+      ? (db.prepare("SELECT name, description, readme, types, manifest FROM packages WHERE name=?").get(pkg.name) as any)
+      : null;
+
     db.prepare(`
       UPDATE packages SET
         readme=?, description=?, manifest=?, author=?, version=?, license=?,
@@ -74,16 +82,16 @@ function writeBackNpmDetail(db: DatabaseDriver, pkg: SearchResult): void {
       pkg.license, pkg.repoUrl, pkg.dependenciesCount, pkg.publishedAt,
       pkg.detailSource, now, pkg.name,
     );
-    // 同步 FTS：readme 补全后，全文搜索也应能命中该包
-    const id = (db.prepare("SELECT id FROM packages WHERE name=?").get(pkg.name) as any)?.id;
-    if (id != null) {
-      db.prepare("DELETE FROM packages_fts WHERE rowid=?").run(id);
-      db.prepare(`
-        INSERT INTO packages_fts (rowid, name, description, readme, types, manifest_tools)
-        VALUES (?,?,?,?,?,?)`).run(
-        id, pkg.name, pkg.description, pkg.readme ?? "",
-        JSON.stringify(pkg.types), pkg.manifest ?? "",
-      );
+
+    if (id != null && old) {
+      // 删除旧索引项（用旧值）
+      db.prepare(
+        "INSERT INTO packages_fts(packages_fts, rowid, name, description, readme, types, manifest_tools) VALUES('delete', ?, ?, ?, ?, ?, ?)"
+      ).run(id, old.name, old.description ?? "", old.readme ?? "", old.types ?? "[]", old.manifest ?? "");
+      // 插入新索引项
+      db.prepare(
+        "INSERT INTO packages_fts(rowid, name, description, readme, types, manifest_tools) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(id, pkg.name, pkg.description, pkg.readme ?? "", JSON.stringify(pkg.types), pkg.manifest ?? "");
     }
   });
   tx();
