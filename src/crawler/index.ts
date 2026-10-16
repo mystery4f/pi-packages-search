@@ -135,6 +135,15 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
         log(`   🔄 补漏: ${missing.length} 个包上次失败/缺失，本次重试\n`);
       }
     }
+    // 补描述：库中描述为空且未尝试过的包（存量修补；爬过仍无描述的会被标记 desc_attempted 跳过）
+    const inFetch = new Set(toFetch);
+    const descEmpty = (db.prepare(
+      "SELECT name FROM packages WHERE archived=0 AND (description IS NULL OR description='') AND (desc_attempted IS NULL OR desc_attempted=0)",
+    ).all() as any[]).map((r) => r.name).filter((n) => !inFetch.has(n));
+    if (descEmpty.length > 0) {
+      toFetch.push(...descEmpty);
+      log(`   📝 补描述: ${descEmpty.length} 个包描述为空，本次一并补齐\n`);
+    }
   }
 
   // ── 阶段 C+D: 详情爬取 + Worker 解析 + Writer 入库 ──
@@ -149,7 +158,8 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
     const listMap = new Map(list.map((p) => [p.name, p]));
     let done = 0;
     const detailStart = Date.now();
-
+    // 本次爬取后描述仍为空的包 → 标记 desc_attempted，避免增量补描述每轮重复爬取
+    const descStillEmpty: string[] = [];
     try {
       await pool(toFetch, limiter.current(), async (name) => {
         opts.signal?.throwIfAborted();
@@ -163,6 +173,7 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
             pkg.types = lp.types.length ? lp.types : pkg.types;
           }
           writer.add(pkg);
+          if (!pkg.description) descStillEmpty.push(name);
           limiter.recordSuccess();
         } catch (err: any) {
           failedItems.push({ name, error: err?.message || String(err) });
@@ -183,6 +194,13 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
     } finally {
       writer.flush();
       workers.terminate();
+      if (descStillEmpty.length > 0) {
+        const mark = db.prepare("UPDATE packages SET desc_attempted=1 WHERE name=?");
+        const markAll = db.transaction(() => {
+          for (const n of descStillEmpty) mark.run(n);
+        });
+        markAll();
+      }
     }
     // 中止时跳过 markArchived：消失包判定基于完整列表，安全但保守起见留到完整爬取
     if (!opts.signal?.aborted && !opts.full && !opts.retryOnly) writer.markArchived(removedNames);

@@ -44,6 +44,7 @@ export function initSchema(db: DatabaseDriver): void {
 
   // ── 轻量迁移：为老库补列（CREATE TABLE IF NOT EXISTS 不会更新既有表结构）──
   addColumnIfNotExists(db, "packages", "detail_source", "TEXT");
+  addColumnIfNotExists(db, "packages", "desc_attempted", "INTEGER DEFAULT 0");
 }
 
 /** 仅当列不存在时 ALTER TABLE ADD COLUMN（SQLite 不支持 ADD COLUMN IF NOT EXISTS）*/

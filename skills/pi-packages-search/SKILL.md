@@ -20,6 +20,7 @@ description: "智能搜索 Pi 包目录（FTS5 全文 + JSON 命令双路径）�
 | 描述功能（"记忆插件"）| `search_packages(query=英文关键词)` |
 | 指定类型（"热门主题"）| `list_packages(type=theme, sort=downloads)` |
 | 查特定包（"X 是什么"）| `get_package_detail(name=X)` |
+| 批量看详情（"对比 A B C"）| `get_package_details(names=[A,B,C])`，README 自动截断 |
 | 精确字段（"作者 Y"）| `rg`/`jq` 搜 `packages.json` |
 
 ### 3. 呈现结果
@@ -44,3 +45,4 @@ description: "智能搜索 Pi 包目录（FTS5 全文 + JSON 命令双路径）�
 - 只补漏用 `--retry`（跳过日期对比，仅重试 failed.json 中或 DB 缺失的包，最快）
 - 命令后台执行，不阻塞 pi；`pi-packages-search:stop` 随时中止（已完成部分保留）
 - 补描述用 `--desc`（仅爬取 description 为空的包，跳过列表扫描；描述来自详情页副标题/meta）
+- 增量模式自动补齐空描述包（一次性自愈；真没描述的标记 `desc_attempted` 不重复爬）

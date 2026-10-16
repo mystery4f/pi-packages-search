@@ -41,4 +41,63 @@ describe("crawler integration", () => {
     expect(s.byType.theme).toBe(1);
     db.close(false);
   }, 20000);
+  test("增量模式自动补齐空描述，且爬过仍无描述的包被标记跳过", async () => {
+    const os = await import("node:os");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-pkg-desc-"));
+    // meta：两包日期与列表一致 → diff 不产生更新，只走"补描述"分支
+    fs.writeFileSync(path.join(dataDir, "meta.json"), JSON.stringify({ dateIndex: { "pkg-a": 1000, "pkg-b": 2000 } }));
+    const db = openDatabase(":memory:");
+    initSchema(db);
+    db.exec(`INSERT INTO packages (name, description, types, archived) VALUES ('pkg-a', '', '["extension"]', 0)`);
+    db.exec(`INSERT INTO packages (name, description, types, archived) VALUES ('pkg-b', 'has desc', '["theme"]', 0)`);
+
+    // pkg-a 详情页带 content-description；pkg-b 本次不应被爬
+    let detailCalls = 0;
+    globalThis.fetch = mock((url: string) => {
+      const u = String(url);
+      const body = u.includes("page=2") ? LIST_P2
+        : u.includes("page=1") || u.endsWith("/packages") ? LIST_P1
+        : u.endsWith("/packages/pkg-a") ? (() => { detailCalls++; return `<p class="content-description">auto backfilled desc</p>`; })()
+        : u.endsWith("/packages/pkg-b") ? (() => { detailCalls++; return "<dl></dl>"; })()
+        : "";
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as any;
+
+    // 第一轮增量：pkg-a（空描述）被自动补齐；pkg-b 有描述不碰
+    await runCrawler(db, { dataDir, silent: true });
+    const a = db.prepare("SELECT description, desc_attempted FROM packages WHERE name='pkg-a'").get() as any;
+    expect(a.description).toBe("auto backfilled desc");
+    expect(a.desc_attempted ?? 0).toBe(0);
+
+    // 空描述且页面真没描述的包 → 标记 desc_attempted=1
+    db.exec(`UPDATE packages SET description='', desc_attempted=NULL WHERE name='pkg-b'`);
+    globalThis.fetch = mock((url: string) => {
+      const u = String(url);
+      const body = u.includes("page=2") ? LIST_P2
+        : u.includes("page=1") || u.endsWith("/packages") ? LIST_P1
+        : u.endsWith("/packages/pkg-a") ? "<dl></dl>"
+        : u.endsWith("/packages/pkg-b") ? "<dl></dl>" : "";
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as any;
+    await runCrawler(db, { dataDir, silent: true });
+    const b = db.prepare("SELECT desc_attempted FROM packages WHERE name='pkg-b'").get() as any;
+    expect(b.desc_attempted).toBe(1);
+
+    // 第三轮：pkg-b 已标记 → 不再发起详情请求（detailCalls 不再增长）
+    let callsBefore = detailCalls;
+    globalThis.fetch = mock((url: string) => {
+      const u = String(url);
+      const body = u.includes("page=2") ? LIST_P2
+        : u.includes("page=1") || u.endsWith("/packages") ? LIST_P1
+        : u.includes("/packages/pkg-") ? (() => { detailCalls++; return "<dl></dl>"; })() : "";
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as any;
+    await runCrawler(db, { dataDir, silent: true });
+    expect(detailCalls).toBe(callsBefore);
+
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    db.close(false);
+  }, 20000);
 });

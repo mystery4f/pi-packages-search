@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { openDb } from "../db/connection";
 import { searchPackages, getPackageDetail, listPackages, getStats } from "../db/query";
 import { runCrawler } from "../crawler";
+import { extractManifestTools } from "../crawler/detail-parser";
 import { FAILED_PATH } from "../shared/config";
 import { readFileSync, existsSync } from "node:fs";
 
@@ -36,6 +37,20 @@ function fmtRows(rows: any[]): string {
     `   安装: ${r.installCmd}`).join("\n");
 }
 
+/** 单包紧凑详情（批量查看用；README 截断防上下文爆炸）*/
+function fmtDetail(r: any, readmeLimit: number): string {
+  const tools = r.manifest ? extractManifestTools(r.manifest) : [];
+  const head = [
+    `## ${r.name}${r.description ? ` — ${r.description}` : ""}`,
+    `[${(r.types || []).join(",")}] v${r.version ?? "?"} · ${r.author ?? "?"} · ${r.license ?? "?"} · ${r.size ?? "?"} · 依赖 ${r.dependenciesCount ?? 0} · ${(r.downloadsMonthly ?? 0).toLocaleString()}/mo`,
+    `安装: ${r.installCmd}${r.repoUrl ? ` · 仓库: ${r.repoUrl}` : ""}${tools.length ? `\nmanifest 工具: ${tools.join(", ")}` : ""}`,
+  ].filter(Boolean).join("\n");
+  if (!r.readme || readmeLimit <= 0) return `${head}\nREADME: 无`;
+  const excerpt = r.readme.slice(0, readmeLimit);
+  const more = r.readme.length > readmeLimit ? `\n…（README 共 ${r.readme.length} 字符，已截断）` : "";
+  return `${head}\nREADME:\n${excerpt}${more}`;
+}
+
 export default function (pi: any) {
   pi.registerTool({
     name: "search_packages",
@@ -66,6 +81,31 @@ export default function (pi: any) {
       db.close(false);
       if (!r) return { content: [{ type: "text", text: `未找到包: ${params.name}` }], details: {} };
       return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }], details: {} };
+    },
+  });
+
+  pi.registerTool({
+    name: "get_package_details",
+    label: "Batch Get Package Details",
+    description: "按包名数组批量获取详情（紧凑格式，README 默认截断 1500 字符）。一次传多个包名，最多 20 个；README 为空的包自动从 npm registry 补充。",
+    parameters: Type.Object({
+      names: Type.Array(Type.String(), { maxItems: 20, description: "包名数组，一次最多 20 个" }),
+      readmeLimit: Type.Optional(Type.Number({ description: "每个包 README 保留字符数，默认 1500；0 表示不返回 README" })),
+    }),
+    async execute(_id: string, params: any) {
+      const db = openDb();
+      const readmeLimit = params.readmeLimit ?? 1500;
+      const blocks: string[] = [];
+      for (const name of params.names) {
+        try {
+          const r = await getPackageDetail(db, name);
+          blocks.push(r ? fmtDetail(r, readmeLimit) : `## ${name}\n未找到`);
+        } catch (err: any) {
+          blocks.push(`## ${name}\n出错: ${err?.message ?? err}`);
+        }
+      }
+      db.close(false);
+      return { content: [{ type: "text", text: blocks.join("\n\n") }], details: { count: params.names.length } };
     },
   });
 
