@@ -16,6 +16,7 @@ import type { ListPackage, CrawlMeta } from "../shared/types";
 export interface CrawlOptions {
   full?: boolean;       // 全量详情
   retryOnly?: boolean;   // 只补漏：跳过列表扫描，仅重试 failed.json + DB 缺失的包
+  descriptionsOnly?: boolean; // 只补描述：跳过列表扫描，爬取 description 为空的包详情
   proxy?: string;
   dataDir?: string;     // 测试用：JSON/META 写入目录
   onLog?: (msg: string) => void;  // 日志回调（默认 console.log）
@@ -35,22 +36,28 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
   const log = makeLogger(opts);
   if (opts.proxy) { process.env.HTTPS_PROXY = opts.proxy; process.env.HTTP_PROXY = opts.proxy; }
 
-  // ── 阶段 A: 列表全量 ──
-  log("📋 阶段 A: 爬取列表页...\n");
-  const firstHtml = await fetchPage(BASE_URL, DEFAULT_RETRIES, DEFAULT_TIMEOUT, opts.signal);
-  const totalPages = parseTotalPages(firstHtml);
-  const totalCount = parseTotalCount(firstHtml);
-  log(`   发现 ${totalCount} 个包，共 ${totalPages} 页\n`);
-  const list: ListPackage[] = parseListHtml(firstHtml);
-  let listPagesDone = 1;
-  const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
-  await pool(pages, LIST_CONCURRENCY, async (page) => {
-    opts.signal?.throwIfAborted();
-    const html = await fetchPage(`${BASE_URL}?page=${page}`, DEFAULT_RETRIES, DEFAULT_TIMEOUT, opts.signal);
-    list.push(...parseListHtml(html));
-    listPagesDone++;
-    log(`\r   列表页 ${listPagesDone}/${totalPages}  (${list.length} 包)      \r`);
-  });
+  // ── 阶段 A: 列表全量（desc 模式跳过，直接查库）──
+  const list: ListPackage[] = [];
+  let totalCount = 0;
+  if (opts.descriptionsOnly) {
+    log("🔧 补描述模式：跳过列表扫描，直接定位描述为空的包\n");
+  } else {
+    log("📋 阶段 A: 爬取列表页...\n");
+    const firstHtml = await fetchPage(BASE_URL, DEFAULT_RETRIES, DEFAULT_TIMEOUT, opts.signal);
+    const totalPages = parseTotalPages(firstHtml);
+    totalCount = parseTotalCount(firstHtml);
+    log(`   发现 ${totalCount} 个包，共 ${totalPages} 页\n`);
+    list.push(...parseListHtml(firstHtml));
+    let listPagesDone = 1;
+    const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+    await pool(pages, LIST_CONCURRENCY, async (page) => {
+      opts.signal?.throwIfAborted();
+      const html = await fetchPage(`${BASE_URL}?page=${page}`, DEFAULT_RETRIES, DEFAULT_TIMEOUT, opts.signal);
+      list.push(...parseListHtml(html));
+      listPagesDone++;
+      log(`\r   列表页 ${listPagesDone}/${totalPages}  (${list.length} 包)      \r`);
+    });
+  }
   // ── 阶段 B: 决定要爬哪些详情页 ──
   const metaPath = opts.dataDir ? `${opts.dataDir}/meta.json` : META_PATH;
   const skipMetaRead = opts.dataDir === ":memory:" || !existsSync(metaPath);
@@ -61,7 +68,24 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
   const toFetch: string[] = [];
   let removedNames: string[] = [];
 
-  if (opts.retryOnly) {
+  if (opts.descriptionsOnly) {
+    // ── desc 模式：只补描述为空的包，跳过列表扫描 ──
+    log("🔧 补漏模式定位：查库找 description 为空的包\n");
+    const rows = db.prepare(
+      "SELECT name, types, downloads_monthly, updated_at FROM packages WHERE archived=0 AND (description IS NULL OR description='')",
+    ).all() as any[];
+    toFetch.push(...rows.map((r) => r.name));
+    // 用 DB 既有字段充当列表映射：UPSERT 是整行 REPLACE，缺失字段会被清空
+    for (const r of rows) {
+      list.push({
+        name: r.name,
+        types: r.types ? JSON.parse(r.types) : [],
+        downloads: r.downloads_monthly ?? 0,
+        date: r.updated_at ? new Date(r.updated_at).getTime() : 0,
+      });
+    }
+    log(`   需补描述 ${toFetch.length} 个包\n`);
+  } else if (opts.retryOnly) {
     // ── retry 模式：只补漏，不爬全量列表 ──
     log("🔧 补漏模式：仅重试失败/缺失的包\n");
     // 从 failed.json 拿上次失败的包名
@@ -182,7 +206,7 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
     durationSeconds: Math.round((Date.now() - start) / 1000),
     crawlerVersion: "1.0.0",
     sourceUrl: BASE_URL,
-    dateIndex: buildDateIndex(list),
+    dateIndex: opts.descriptionsOnly ? prevIndex : buildDateIndex(list),
     failedCount: failedItems.length,
   };
   if (!skipFiles) {

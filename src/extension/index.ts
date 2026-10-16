@@ -149,7 +149,7 @@ export default function (pi: any) {
   }
 
   /** 启动后台爬取任务：并发守卫 + AbortSignal + 完成后落盘清理与分级通知 */
-  function startCrawlBackground(ui: any, mode: { full?: boolean; retryOnly?: boolean; label: string }) {
+  function startCrawlBackground(ui: any, mode: { full?: boolean; retryOnly?: boolean; descriptionsOnly?: boolean; label: string }) {
     if (activeCrawl) {
       ui?.notify?.("⚠ 已有爬取在进行中，/pi-packages-search:stop 可中止", "warn");
       return;
@@ -165,6 +165,7 @@ export default function (pi: any) {
         const meta = await runCrawler(db, {
           full: mode.full,
           retryOnly: mode.retryOnly,
+          descriptionsOnly: mode.descriptionsOnly,
           signal: ac.signal,
           onLog,
         });
@@ -188,11 +189,12 @@ export default function (pi: any) {
   }
 
   pi.registerCommand("pi-packages-search:crawl", {
-    description: "爬取/更新 Pi 包索引（后台执行，不阻塞 pi。默认增量，--full 全量, --retry 只补漏）",
+    description: "爬取/更新 Pi 包索引（后台执行，不阻塞 pi。默认增量，--full 全量, --retry 只补漏, --desc 补描述）",
     handler: async (args: string, ctx: any) => {
       startCrawlBackground(ctx?.ui, {
         full: args.includes("--full"),
         retryOnly: args.includes("--retry"),
+        descriptionsOnly: args.includes("--desc"),
         label: "爬取",
       });
     },

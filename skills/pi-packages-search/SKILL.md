@@ -43,3 +43,4 @@ description: "智能搜索 Pi 包目录（FTS5 全文 + JSON 命令双路径）�
 - 首次或数据损坏用 `--full`（全量，约 4 分钟）
 - 只补漏用 `--retry`（跳过日期对比，仅重试 failed.json 中或 DB 缺失的包，最快）
 - 命令后台执行，不阻塞 pi；`pi-packages-search:stop` 随时中止（已完成部分保留）
+- 补描述用 `--desc`（仅爬取 description 为空的包，跳过列表扫描；描述来自详情页副标题/meta）

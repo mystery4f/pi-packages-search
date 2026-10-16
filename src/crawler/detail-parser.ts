@@ -58,7 +58,12 @@ export function parseDetailHtml(html: string, name: string): PiPackage {
   const readmeMatch = html.match(/<main[^>]*id=["']readme["'][\s\S]*?<\/main>/i);
   const manifestMatch = html.match(/<pre[^>]*><code[^>]*>(\{[\s\S]*?\})<\/code><\/pre>/);
 
-  const description = clean(field(html, "Description") || "");
+  // 描述来源：h1 副标题 → meta description → dt "Description"（pi.dev 通常无此字段，仅兜底）
+  const contentDesc = html.match(/<p[^>]*class="content-description"[^>]*>([\s\S]*?)<\/p>/i);
+  const metaDesc = html.match(/<meta[^>]*name="description"[^>]*content="([^"]*)"/i);
+  const description = clean(
+    (contentDesc?.[1] ?? "") || (metaDesc?.[1] ?? "") || field(html, "Description") || "",
+  );
   const dl = parseDownloads(field(html, "Downloads"));
   const manifest = manifestMatch ? manifestMatch[1].trim() : null;
 
