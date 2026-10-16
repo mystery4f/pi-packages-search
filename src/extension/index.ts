@@ -100,119 +100,126 @@ export default function (pi: any) {
     },
   });
 
-  pi.registerCommand("pi-packages-search:crawl", {
-    description: "爬取/更新 Pi 包索引（默认增量）。--full 全量, --retry 只补漏",
-    handler: async (args: string, ctx: any) => {
-      const ui = ctx?.ui;
-      const STATUS_KEY = "pi-pkg-search";
+  // ── 后台爬取基础设施：handler 立即返回，不阻塞 pi 主输入循环 ──
+  // pi 对命令 handler 是 await 的（interactive-mode 主循环串行 await prompt），
+  // 在 handler 里直接 await runCrawler 会把整个 TUI 卡住直到爬取结束（表现为"冻结"）。
+  const STATUS_KEY = "pi-pkg-search";
+  let activeCrawl: AbortController | null = null;
 
-      // 节流：进度刷新很快，限制 setStatus 频率避免闪烁
-      let lastStatusMs = 0;
-      const THROTTLE_MS = 200;
-      const onLog = (msg: string) => {
-        if (!ui) return;
-        const trimmed = msg.replace(/\r/g, "").trim();
-        if (!trimmed) return;
+  /** 节流状态栏日志：进度条 → setStatus，阶段头/补漏提示 → notify */
+  function makeCrawlLogger(ui: any): (msg: string) => void {
+    let lastStatusMs = 0;
+    const THROTTLE_MS = 200;
+    return (msg: string) => {
+      if (!ui) return;
+      const trimmed = msg.replace(/\r/g, "").trim();
+      if (!trimmed) return;
 
-        // 进度条 → setStatus（单行紧凑）
-        if (/^\[?\d{1,3}%/.test(trimmed) || /列表页\s*\d+\/\d+/.test(trimmed)) {
-          const now = Date.now();
-          if (now - lastStatusMs < THROTTLE_MS) return;
-          lastStatusMs = now;
-          // 缩短格式: "67% 2635/3931 14/s ←82s 失败2 并发15"
-          const compact = trimmed
-            .replace(/\[?\s*(\d+)%\]?\s*(\d+)\/(\d+)\s+([\d.]+)\/s\s+剩余\s*~(\d+)s\s+失败\s*(\d+)\s+并发\s*(\d+)/,
-              "$1% $2/$3 $4/s ←$5s 失败$6")
-            .replace(/列表页\s*(\d+)\/(\d+)\s*\((\d+)\s*包\)/, "列表 $1/$2 ($3包)");
-          ui.setStatus?.(STATUS_KEY, compact);
-          return;
-        }
-        // 阶段头 → notify（简短一次性）
-        if (/^[📋🌐🔍🔧]/.test(trimmed)) {
-          const short = trimmed.replace(/^📋 阶段 A: 爬取列表页\.\.\.$/, "📋 扫描列表")
-            .replace(/^🌐 阶段 C: 爬取详情页.*$/, "🌐 拉取详情")
-            .replace(/^🔧 补漏模式.*$/, "🔧 补漏")
-            .replace(/^🔧 全量模式.*$/, "🔧 全量爬取")
-            .replace(/^🔍 阶段 B:.*$/, "🔍 增量对比");
-          ui.notify?.(short, "info");
-          return;
-        }
-        // 补漏提示 → notify
-        if (/^[🔄]/.test(trimmed) || (trimmed.includes("补漏") && /需爬/.test(trimmed))) {
-          ui.notify?.(trimmed, "info");
-          return;
-        }
-        // 统计行（"发现 N 个包"）→ notify
-        if (/^\s*发现\s*\d+\s*个包/.test(trimmed)) {
-          ui.notify?.(trimmed, "info");
-          return;
-        }
-        // 最终结果（✅/⚠）→ 略过，handler 自己 notify
-        // 其他无关日志 → 丢弃
-      };
+      // 进度条 → setStatus（单行紧凑）
+      if (/^\[?\d{1,3}%/.test(trimmed) || /列表页\s*\d+\/\d+/.test(trimmed)) {
+        const now = Date.now();
+        if (now - lastStatusMs < THROTTLE_MS) return;
+        lastStatusMs = now;
+        const compact = trimmed
+          .replace(/\[?\s*(\d+)%\]?\s*(\d+)\/(\d+)\s+([\d.]+)\/s\s+剩余\s*~(\d+)s\s+失败\s*(\d+)\s+并发\s*(\d+)/,
+            "$1% $2/$3 $4/s ←$5s 失败$6")
+          .replace(/列表页\s*(\d+)\/(\d+)\s*\((\d+)\s*包\)/, "列表 $1/$2 ($3包)");
+        ui.setStatus?.(STATUS_KEY, compact);
+        return;
+      }
+      // 阶段头 → notify（简短一次性）
+      if (/^[📋🌐🔍🔧]/.test(trimmed)) {
+        const short = trimmed.replace(/^📋 阶段 A: 爬取列表页\.\.\.$/, "📋 扫描列表")
+          .replace(/^🌐 阶段 C: 爬取详情页.*$/, "🌐 拉取详情")
+          .replace(/^🔧 补漏模式.*$/, "🔧 补漏")
+          .replace(/^🔧 全量模式.*$/, "🔧 全量爬取")
+          .replace(/^🔍 阶段 B:.*$/, "🔍 增量对比");
+        ui.notify?.(short, "info");
+        return;
+      }
+      // 补漏提示 / 统计行 → notify
+      if (/^[🔄]/.test(trimmed) || (trimmed.includes("补漏") && /需爬/.test(trimmed))) {
+        ui.notify?.(trimmed, "info");
+        return;
+      }
+      if (/^\s*发现\s*\d+\s*个包/.test(trimmed)) {
+        ui.notify?.(trimmed, "info");
+      }
+    };
+  }
 
+  /** 启动后台爬取任务：并发守卫 + AbortSignal + 完成后落盘清理与分级通知 */
+  function startCrawlBackground(ui: any, mode: { full?: boolean; retryOnly?: boolean; label: string }) {
+    if (activeCrawl) {
+      ui?.notify?.("⚠ 已有爬取在进行中，/pi-packages-search:stop 可中止", "warn");
+      return;
+    }
+    const ac = new AbortController();
+    activeCrawl = ac;
+    ui?.notify?.(`🚀 ${mode.label}已转入后台，pi 可正常使用（/pi-packages-search:stop 中止）`, "info");
+    void (async () => {
+      const onLog = makeCrawlLogger(ui);
+      let db: any;
       try {
-        const db = openDb();
+        db = openDb();
         const meta = await runCrawler(db, {
-          full: args.includes("--full"),
-          retryOnly: args.includes("--retry"),
+          full: mode.full,
+          retryOnly: mode.retryOnly,
+          signal: ac.signal,
           onLog,
         });
         db.close(false);
-        // 清空状态栏 + 根据结果分级提示
         ui?.setStatus?.(STATUS_KEY, undefined);
         if (meta.failedCount > 0) {
-          // 部分失败：读 failed.json 拿失败包名，在对话里留摘要
           const failedSummary = await readFailedSummary();
           ui?.notify?.(`⚠ 爬取完成但 ${meta.failedCount} 个包失败: ${failedSummary}`, "warn");
         } else {
           ui?.notify?.(`✅ 爬取完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s`, "info");
         }
       } catch (err: any) {
+        try { db?.close(false); } catch { /* 已关闭 */ }
         ui?.setStatus?.(STATUS_KEY, undefined);
-        ui?.notify?.(`❌ 爬取失败: ${err?.message ?? err}`, "error");
+        if (ac.signal.aborted) ui?.notify?.("🛑 爬取已中止（已完成部分已落盘，下次增量自动补齐）", "info");
+        else ui?.notify?.(`❌ 爬取失败: ${err?.message ?? err}`, "error");
+      } finally {
+        activeCrawl = null;
       }
+    })();
+  }
+
+  pi.registerCommand("pi-packages-search:crawl", {
+    description: "爬取/更新 Pi 包索引（后台执行，不阻塞 pi。默认增量，--full 全量, --retry 只补漏）",
+    handler: async (args: string, ctx: any) => {
+      startCrawlBackground(ctx?.ui, {
+        full: args.includes("--full"),
+        retryOnly: args.includes("--retry"),
+        label: "爬取",
+      });
     },
   });
 
   // 短命令：直接补漏，等效于 crawl --retry
   pi.registerCommand("pi-packages-search:retry", {
-    description: "补漏：重试上次失败或缺失的包",
+    description: "补漏：重试上次失败或缺失的包（后台执行，不阻塞 pi）",
     handler: async (_args: string, ctx: any) => {
-      const ui = ctx?.ui;
-      const STATUS_KEY = "pi-pkg-search";
-      let lastStatusMs = 0;
-      const THROTTLE_MS = 200;
-      const onLog = (msg: string) => {
-        if (!ui) return;
-        const trimmed = msg.replace(/\r/g, "").trim();
-        if (!trimmed) return;
-        if (/^\[?\d{1,3}%/.test(trimmed)) {
-          const now = Date.now();
-          if (now - lastStatusMs < THROTTLE_MS) return;
-          lastStatusMs = now;
-          const compact = trimmed
-            .replace(/\[?\s*(\d+)%\]?\s*(\d+)\/(\d+)\s+([\d.]+)\/s\s+←(\d+)s\s+失败(\d+)/,
-              "$1% $2/$3 $4/s ←$5s 失败$6");
-          ui.setStatus?.(STATUS_KEY, compact);
-        }
-      };
-      ui?.notify?.("🔧 补漏中...", "info");
-      try {
-        const db = openDb();
-        const meta = await runCrawler(db, { retryOnly: true, onLog });
-        db.close(false);
-        ui?.setStatus?.(STATUS_KEY, undefined);
-        if (meta.failedCount > 0) {
-          const summary = await readFailedSummary();
-          ui?.notify?.(`⚠ 补漏完成但仍有 ${meta.failedCount} 个失败: ${summary}`, "warn");
-        } else {
-          ui?.notify?.(`✅ 补漏完成`, "info");
-        }
-      } catch (err: any) {
-        ui?.setStatus?.(STATUS_KEY, undefined);
-        ui?.notify?.(`❌ 补漏失败: ${err?.message ?? err}`, "error");
-      }
+      startCrawlBackground(ctx?.ui, { retryOnly: true, label: "补漏" });
     },
+  });
+
+  pi.registerCommand("pi-packages-search:stop", {
+    description: "中止进行中的爬取（已完成部分保留）",
+    handler: async (_args: string, ctx: any) => {
+      if (!activeCrawl) {
+        ctx?.ui?.notify?.("当前没有进行中的爬取", "info");
+        return;
+      }
+      activeCrawl.abort();
+      ctx?.ui?.notify?.("正在中止爬取…", "info");
+    },
+  });
+
+  // pi 关闭时中止后台爬取，避免写库与退出流程纠缠
+  pi.on("session_shutdown", async () => {
+    activeCrawl?.abort();
   });
 }

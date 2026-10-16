@@ -22,6 +22,15 @@ beforeEach(() => {
 });
 
 describe("crawler integration", () => {
+  test("外部中止：立即抛 AbortError 且不落盘", async () => {
+    const db = openDatabase(":memory:");
+    initSchema(db);
+    // 预先中止的 signal：阶段 A 第一跳就失败，不发起任何网络请求
+    await expect(
+      runCrawler(db, { dataDir: ":memory:", silent: true, signal: AbortSignal.abort() }),
+    ).rejects.toThrow();
+    expect(getStats(db).total).toBe(0);
+  });
   test("全量爬取入库 2 个包", async () => {
     const db = openDatabase(":memory:");
     initSchema(db);

@@ -1,7 +1,7 @@
 import type { DatabaseDriver } from "../db/driver";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { fetchPage } from "./fetcher";
+import { fetchPage, DEFAULT_RETRIES, DEFAULT_TIMEOUT } from "./fetcher";
 import { parseListHtml, parseTotalPages, parseTotalCount } from "./list-parser";
 import { computeDiff, buildDateIndex } from "./incremental";
 import { pool } from "./pool";
@@ -20,6 +20,7 @@ export interface CrawlOptions {
   dataDir?: string;     // 测试用：JSON/META 写入目录
   onLog?: (msg: string) => void;  // 日志回调（默认 console.log）
   silent?: boolean;     // 静默模式（测试用）
+  signal?: AbortSignal; // 外部中止：中止后已完成部分落盘，再抛 AbortError
 }
 
 /** 日志器工厂：onLog 优先（显式回调总生效）；否则 silent 返回空函数；否则默认 stdout */
@@ -36,7 +37,7 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
 
   // ── 阶段 A: 列表全量 ──
   log("📋 阶段 A: 爬取列表页...\n");
-  const firstHtml = await fetchPage(BASE_URL);
+  const firstHtml = await fetchPage(BASE_URL, DEFAULT_RETRIES, DEFAULT_TIMEOUT, opts.signal);
   const totalPages = parseTotalPages(firstHtml);
   const totalCount = parseTotalCount(firstHtml);
   log(`   发现 ${totalCount} 个包，共 ${totalPages} 页\n`);
@@ -44,12 +45,12 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
   let listPagesDone = 1;
   const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
   await pool(pages, LIST_CONCURRENCY, async (page) => {
-    const html = await fetchPage(`${BASE_URL}?page=${page}`);
+    opts.signal?.throwIfAborted();
+    const html = await fetchPage(`${BASE_URL}?page=${page}`, DEFAULT_RETRIES, DEFAULT_TIMEOUT, opts.signal);
     list.push(...parseListHtml(html));
     listPagesDone++;
     log(`\r   列表页 ${listPagesDone}/${totalPages}  (${list.length} 包)      \r`);
   });
-
   // ── 阶段 B: 决定要爬哪些详情页 ──
   const metaPath = opts.dataDir ? `${opts.dataDir}/meta.json` : META_PATH;
   const skipMetaRead = opts.dataDir === ":memory:" || !existsSync(metaPath);
@@ -125,34 +126,42 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
     let done = 0;
     const detailStart = Date.now();
 
-    await pool(toFetch, limiter.current(), async (name) => {
-      try {
-        const html = await fetchPage(`${BASE_URL}/${encodeURIComponent(name)}`);
-        const pkg = await workers.parse(name, html);
-        const lp = listMap.get(name);
-        if (lp) {
-          pkg.downloadsMonthly = pkg.downloadsMonthly || lp.downloads;
-          pkg.updatedAt = lp.date ? new Date(lp.date).toISOString().split("T")[0] : "";
-          pkg.types = lp.types.length ? lp.types : pkg.types;
+    try {
+      await pool(toFetch, limiter.current(), async (name) => {
+        opts.signal?.throwIfAborted();
+        try {
+          const html = await fetchPage(`${BASE_URL}/${encodeURIComponent(name)}`, DEFAULT_RETRIES, DEFAULT_TIMEOUT, opts.signal);
+          const pkg = await workers.parse(name, html);
+          const lp = listMap.get(name);
+          if (lp) {
+            pkg.downloadsMonthly = pkg.downloadsMonthly || lp.downloads;
+            pkg.updatedAt = lp.date ? new Date(lp.date).toISOString().split("T")[0] : "";
+            pkg.types = lp.types.length ? lp.types : pkg.types;
+          }
+          writer.add(pkg);
+          limiter.recordSuccess();
+        } catch (err: any) {
+          failedItems.push({ name, error: err?.message || String(err) });
+          limiter.recordFailure();
         }
-        writer.add(pkg);
-        limiter.recordSuccess();
-      } catch (err: any) {
-        failedItems.push({ name, error: err?.message || String(err) });
-        limiter.recordFailure();
-      }
-      done++;
-      const pct = ((done / toFetch.length) * 100).toFixed(0);
-      const elapsed = (Date.now() - detailStart) / 1000;
-      const speed = elapsed > 0 ? (done / elapsed).toFixed(1) : "0";
-      const remain = toFetch.length - done;
-      const eta = elapsed > 0 && done > 0 ? Math.round(remain / (done / elapsed)) : 0;
-      log(`\r   ${pct}% ${done}/${toFetch.length}  ${speed}/s  ←${eta}s  失败${failedItems.length}    \r`);
-    });
-
-    writer.flush();
-    if (!opts.full && !opts.retryOnly) writer.markArchived(removedNames);
-    workers.terminate();
+        done++;
+        const pct = ((done / toFetch.length) * 100).toFixed(0);
+        const elapsed = (Date.now() - detailStart) / 1000;
+        const speed = elapsed > 0 ? (done / elapsed).toFixed(1) : "0";
+        const remain = toFetch.length - done;
+        const eta = elapsed > 0 && done > 0 ? Math.round(remain / (done / elapsed)) : 0;
+        log(`\r   ${pct}% ${done}/${toFetch.length}  ${speed}/s  ←${eta}s  失败${failedItems.length}    \r`);
+      });
+    } catch (err: any) {
+      // 中止：落盘已完成部分后继续走写盘流程，最后再抛 AbortError
+      if (!opts.signal?.aborted) throw err;
+      log("🛑 已中止，保存已完成的部分...\n");
+    } finally {
+      writer.flush();
+      workers.terminate();
+    }
+    // 中止时跳过 markArchived：消失包判定基于完整列表，安全但保守起见留到完整爬取
+    if (!opts.signal?.aborted && !opts.full && !opts.retryOnly) writer.markArchived(removedNames);
   }
 
   // ── 写 JSON + meta + failed.json ──
@@ -188,5 +197,7 @@ export async function runCrawler(db: DatabaseDriver, opts: CrawlOptions = {}): P
       log(`\n✅ 完成: ${meta.totalPackages} 包, 用时 ${meta.durationSeconds}s\n`);
     }
   }
+  // 中止：索引/数据已落盘（dateIndex 来自完整列表扫描，保留后下次只补未爬的尾巴），再抛中止原因
+  opts.signal?.throwIfAborted();
   return meta;
 }
